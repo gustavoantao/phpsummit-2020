@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-laravel
+  namespace: default
+  labels:
+    app: hello-laravel
+    team: SRE
+spec:
+  selector:
+    matchLabels:
+      app: hello-laravel
+  replicas: 3
+  revisionHistoryLimit: 10
+  template:
+    metadata:
+      labels:
+        app: hello-laravel
+        team: SRE
+    spec:
+      volumes: 
+        - name: shared-files
+          emptyDir: {} 
+        - name: secret-env
+          secret:
+            secretName: secret-env
+            items:
+                - key: .env
+                  path: .env                          
+        - name: configmap-nginxconf
+          configMap:
+              name: configmap-nginxconf
+              items:
+                - key: defaultconf
+                  path: default.conf
+        - name: configmap-wwwconf
+          configMap:
+              name: configmap-wwwconf
+              items:
+                - key: wwwconf
+                  path: z_www.conf
+      containers:              
+        - image: gustavoantao/hello-laravel:latest
+          imagePullPolicy: Always                    
+          name: php-fpm
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+            - name: secret-env
+              mountPath: "/var/www/html/.env"
+              subPath: ".env"
+              readOnly: true   
+            - name: configmap-wwwconf
+              mountPath: "/etc/php7/php-fpm.d/z_www.conf"
+              subPath: z_www.conf
+          lifecycle:
+            postStart:
+              exec:
+                command: 
+                  - "/bin/sh"
+                  - "-c"
+                  - >
+                    cp -pr /app/. /var/www/html &&
+                    chmod -R 777 /var/www/html/storage
+          livenessProbe:
+            exec:
+                command:
+                    - /usr/local/bin/php-fpm-healthcheck
+                    - --listen-queue=10 # fails if there are more than 10 processes waiting in the fpm queue
+                    - --accepted-conn=15000 # fails after fpm has served more than 15k requests, this will force the pod to reset, use with caution
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+                command:
+                    - /usr/local/bin/php-fpm-healthcheck # a simple ping since this means it's ready to handle traffic
+            initialDelaySeconds: 10
+            periodSeconds: 20
+        - image: nginx:1.17-alpine
+          imagePullPolicy: Always          
+          name: nginx          
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+            - name: configmap-nginxconf
+              mountPath: "/etc/nginx/conf.d/default.conf"
+              subPath: default.conf
+          ports:
+            - containerPort: 80
+          livenessProbe:
+             httpGet:
+               path: /api/healthz
+               port: 80
+             initialDelaySeconds: 5
+             periodSeconds: 20
+          readinessProbe:
+             tcpSocket:
+               port: 80
+             initialDelaySeconds: 5
+             periodSeconds: 20      
